@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Generator
+
+from ncbi_client.throttle import with_retry
+
+if TYPE_CHECKING:
+    from ncbi_client.client import NCBIClient
+
+DATASETS_BASE_URL = "https://api.ncbi.nlm.nih.gov/datasets/v2"
+
+OPERATIONS = {
+    "taxonomy-data-report": {
+        "method": "GET",
+        "path": "/taxonomy/taxon/{taxons}/dataset_report",
+        "path_params": ["taxons"],
+    },
+    "taxonomy-image-metadata": {
+        "method": "GET",
+        "path": "/taxonomy/taxon/{taxon}/image/metadata",
+        "path_params": ["taxon"],
+    },
+    "taxonomy-links": {
+        "method": "GET",
+        "path": "/taxonomy/taxon/{taxon}/links",
+        "path_params": ["taxon"],
+    },
+    "genome-dataset-report": {
+        "method": "GET",
+        "path": "/genome/accession/{accessions}/dataset_report",
+        "path_params": ["accessions"],
+    },
+    "genome-dataset-reports-by-taxon": {
+        "method": "GET",
+        "path": "/genome/taxon/{taxons}/dataset_report",
+        "path_params": ["taxons"],
+    },
+    "genome-dataset-reports-by-biosample-id": {
+        "method": "GET",
+        "path": "/genome/biosample/{biosample_ids}/dataset_report",
+        "path_params": ["biosample_ids"],
+    },
+    "genome-annotation-report": {
+        "method": "GET",
+        "path": "/genome/accession/{accession}/annotation_report",
+        "path_params": ["accession"],
+    },
+    "genome-sequence-report": {
+        "method": "GET",
+        "path": "/genome/accession/{accession}/sequence_reports",
+        "path_params": ["accession"],
+    },
+    "genome-links-by-accession": {
+        "method": "GET",
+        "path": "/genome/accession/{accessions}/links",
+        "path_params": ["accessions"],
+    },
+    "gene-reports-by-id": {
+        "method": "GET",
+        "path": "/gene/id/{gene_ids}",
+        "path_params": ["gene_ids"],
+    },
+    "gene-orthologs-by-id": {
+        "method": "GET",
+        "path": "/gene/id/{gene_id}/orthologs",
+        "path_params": ["gene_id"],
+    },
+    "gene-product-reports-by-id": {
+        "method": "GET",
+        "path": "/gene/id/{gene_ids}/product_report",
+        "path_params": ["gene_ids"],
+    },
+    "gene-links-by-id": {
+        "method": "GET",
+        "path": "/gene/id/{gene_ids}/links",
+        "path_params": ["gene_ids"],
+    },
+    "gene-dataset-reports-by-taxon": {
+        "method": "GET",
+        "path": "/gene/taxon/{taxon}/dataset_report",
+        "path_params": ["taxon"],
+    },
+    "bio-sample-dataset-report": {
+        "method": "GET",
+        "path": "/biosample/accession/{accessions}/biosample_report",
+        "path_params": ["accessions"],
+    },
+    "virus-reports-by-taxon": {
+        "method": "GET",
+        "path": "/virus/taxon/{taxon}/dataset_report",
+        "path_params": ["taxon"],
+    },
+    "virus-reports-by-acessions": {
+        "method": "GET",
+        "path": "/virus/accession/{accessions}/dataset_report",
+        "path_params": ["accessions"],
+    },
+    "virus-annotation-reports-by-taxon": {
+        "method": "GET",
+        "path": "/virus/taxon/{taxon}/annotation_report",
+        "path_params": ["taxon"],
+    },
+    "virus-annotation-reports-by-acessions": {
+        "method": "GET",
+        "path": "/virus/accession/{accessions}/annotation_report",
+        "path_params": ["accessions"],
+    },
+}
+
+REPORT_EXTRACTORS = {
+    "taxonomy": "taxonomy",
+    "gene": "gene",
+    "gene-product": "product",
+    "annotation": "annotation",
+}
+
+
+def _extract_report(entity_type: str, report: dict) -> dict:
+    key = REPORT_EXTRACTORS.get(entity_type)
+    if key:
+        return report.get(key, report)
+    return report
+
+
+def _build_request(op: dict, params: dict) -> tuple[str, dict]:
+    path = op["path"]
+    query = {}
+    remaining = dict(params)
+
+    for pp in op.get("path_params", []):
+        val = remaining.pop(pp, None)
+        if val is not None:
+            if isinstance(val, (list, tuple)):
+                val = ",".join(str(v) for v in val)
+            path = path.replace(f"{{{pp}}}", str(val))
+
+    query = remaining
+    url = DATASETS_BASE_URL + path
+    return url, query
+
+
+def _do_request(client: NCBIClient, method: str, url: str, query: dict) -> dict:
+    headers = {}
+    if client.api_key:
+        headers["api-token"] = client.api_key
+
+    resp = client.http.request(method, url, params=query, headers=headers)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def fetch(client: NCBIClient, operation: str, params: dict, entity_type: str) -> dict:
+    op = OPERATIONS[operation]
+    url, query = _build_request(op, params)
+
+    client.rate_limiter.acquire()
+    response = with_retry(client.rate_limiter, lambda: _do_request(client, op["method"], url, query))
+
+    reports = response.get("reports", [])
+    extracted = [_extract_report(entity_type, r) for r in reports]
+    return {
+        "results": extracted,
+        "total_count": response.get("total_count"),
+        "next_page_token": response.get("next_page_token"),
+        "entity_type": entity_type,
+    }
+
+
+def fetch_one(client: NCBIClient, operation: str, params: dict, entity_type: str) -> dict | None:
+    page = fetch(client, operation, params, entity_type)
+    results = page["results"]
+    return results[0] if results else None
+
+
+def fetch_all(client: NCBIClient, operation: str, params: dict, entity_type: str) -> Generator[dict, None, None]:
+    current_params = dict(params)
+    while True:
+        page = fetch(client, operation, current_params, entity_type)
+        yield from page["results"]
+        token = page.get("next_page_token")
+        if not token:
+            break
+        current_params["page_token"] = token
