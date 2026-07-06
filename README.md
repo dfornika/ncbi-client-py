@@ -92,7 +92,7 @@ These query NCBI's Entrez system directly. Most return parsed JSON as dicts/list
 | `einfo(db)` | Get metadata for a specific database (fields, links, record count) |
 | `esearch(db, term, **opts)` | Keyword search → `{"ids": [...], "count": int, "retmax": int, "retstart": int}` |
 | `esummary(db, ids=None, *, webenv=None, query_key=None)` | Fetch document summaries for a list of UIDs (or a history-server handle) → `list[dict]` |
-| `efetch(db, ids=None, *, webenv=None, query_key=None, rettype, retmode="text")` | Retrieve full records (FASTA, GenBank flat file, ...) → raw string |
+| `efetch(db, ids=None, *, rettype, webenv=None, query_key=None, retmode="text")` | Retrieve full records (FASTA, GenBank flat file, ...) → raw string |
 | `epost(db, ids)` | Upload an ID list to the history server → `{"webenv": str, "query_key": int}` |
 | `elink(dbfrom, ids=None, **opts)` | Find linked UIDs across databases → `list[{"dbto", "linkname", "ids"}]` |
 | `elink_available(dbfrom, ids)` | List available link types → `list[{"linkname", "dbto", "menutag"}]` |
