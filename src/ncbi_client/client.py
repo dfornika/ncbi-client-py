@@ -4,8 +4,8 @@ import os
 
 import httpx
 
-from ncbi_client import bridge, datasets, eutils
-from ncbi_client.throttle import RateLimiter
+from ncbi_client import blast, bridge, datasets, eutils
+from ncbi_client.throttle import MinIntervalLimiter, RateLimiter
 
 
 class NCBIClient:
@@ -14,6 +14,7 @@ class NCBIClient:
         self.tool = tool
         self.email = email
         self.rate_limiter = RateLimiter(10.0 if self.api_key else 3.0)
+        self.blast_rate_limiter = MinIntervalLimiter(10.0)
         self.http = httpx.Client(timeout=30.0)
 
     def close(self):
@@ -119,3 +120,20 @@ class NCBIClient:
 
     def discover_links(self, db, uid):
         return bridge.discover_links(self, db, uid)
+
+    # --- BLAST ---
+
+    def blast(self, sequence, *, program, database, poll_interval=blast.MIN_POLL_INTERVAL, timeout=None, **opts):
+        return blast.search(
+            self, sequence, program=program, database=database,
+            poll_interval=poll_interval, timeout=timeout, **opts,
+        )
+
+    def blast_submit(self, sequence, *, program, database, **opts):
+        return blast.submit(self, sequence, program=program, database=database, **opts)
+
+    def blast_status(self, rid):
+        return blast.status(self, rid)
+
+    def blast_fetch(self, rid, *, format_type="JSON2_S"):
+        return blast.fetch(self, rid, format_type=format_type)

@@ -1,6 +1,6 @@
 # ncbi-client
 
-Python client for the [NCBI Datasets API](https://www.ncbi.nlm.nih.gov/datasets/) and [E-utilities](https://www.ncbi.nlm.nih.gov/books/NBK25501/), providing a unified interface to search, fetch, and link biological entities across NCBI's databases.
+Python client for the [NCBI Datasets API](https://www.ncbi.nlm.nih.gov/datasets/), [E-utilities](https://www.ncbi.nlm.nih.gov/books/NBK25501/), and [BLAST](https://blast.ncbi.nlm.nih.gov/doc/blast-help/urlapi.html), providing a unified interface to search, fetch, link, and align biological entities across NCBI's databases.
 
 ## Install
 
@@ -143,11 +143,53 @@ pubmed = client.follow_elink("gene", summary["uid"], "gene_pubmed")
 print(f"{pubmed['total_count']} linked PubMed articles")
 ```
 
+### BLAST
+
+The [BLAST Common URL API](https://blast.ncbi.nlm.nih.gov/doc/blast-help/urlapi.html) is a submit-then-poll CGI protocol: you `POST` a search and get back an RID embedded in an HTML blob, then repeatedly `GET` the same endpoint and scrape a `Status=` field out of another HTML blob until it's `READY`, then fetch results in one of several report formats. `client.blast(...)` hides all of that behind a single blocking call that submits, polls (honoring NCBI's "no more than once a minute per RID" policy), and returns parsed hits.
+
+```python
+result = client.blast("ACGT...", program="blastn", database="core_nt")
+result["rid"]                      # "ABC123XYZ"
+for hit in result["searches"][0]["hits"]:
+    print(hit["accession"], hit["hsps"][0]["evalue"])
+```
+
+| Method | Description |
+|--------|-------------|
+| `blast(sequence, *, program, database, poll_interval=60, timeout=None, **opts)` | Submit and block until ready → `{"rid", "program", "database", "searches": [{"query_id", "hits": [{"accession", "title", "taxid", "len", "hsps": [...]}]}]}` |
+| `blast_submit(sequence, *, program, database, **opts)` | Submit only → `{"rid", "rtoe"}` |
+| `blast_status(rid)` | Lightweight status check → `"WAITING"` / `"READY"` / `"FAILED"` / `"UNKNOWN"` |
+| `blast_fetch(rid, format_type="JSON2_S")` | Fetch raw results in any `FORMAT_TYPE` the API supports (`JSON2_S`, `XML2`, `Tabular`, ...) |
+
+`program` is one of `blastn`, `blastp`, `blastx`, `tblastn`, `tblastx`. Extra keyword arguments to `blast`/`blast_submit` (e.g. `expect=1e-10`, `hitlist_size=50`, `megablast="on"`) are passed through uppercased as BLAST search parameters.
+
+#### Async (prototype)
+
+`ncbi_client.async_client.AsyncNCBIClient` is an `asyncio` counterpart with the same `blast`/`blast_submit`/`blast_status`/`blast_fetch` methods, `await`ed instead of blocking. Since a BLAST search can sit idle for minutes, this lets many searches run concurrently on one event loop instead of one thread each:
+
+```python
+import asyncio
+from ncbi_client.async_client import AsyncNCBIClient
+
+async def main():
+    async with AsyncNCBIClient(email="you@example.com") as client:
+        results = await asyncio.gather(
+            client.blast(seq_a, program="blastn", database="core_nt"),
+            client.blast(seq_b, program="blastn", database="core_nt"),
+        )
+
+asyncio.run(main())
+```
+
+This is a prototype scoped to BLAST only — E-utilities/Datasets don't have the same idle-wait profile, so `NCBIClient` remains the sync-only, primary client for those.
+
 ## Rate limiting
 
-The client includes a token-bucket rate limiter shared across all requests:
+The client includes a token-bucket rate limiter shared across Datasets/E-utilities requests:
 - **Without API key**: 3 requests/sec
 - **With API key**: 10 requests/sec
+
+BLAST requests use a separate limiter enforcing NCBI's "no more than one request every 10 seconds" policy, since it's a spacing floor rather than a rate.
 
 Retryable errors (HTTP 429, 5xx) are automatically retried up to 3 times with exponential backoff.
 
