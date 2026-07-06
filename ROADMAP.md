@@ -3,7 +3,7 @@
 ## Where things stand
 
 - **Datasets v2**: report/metadata endpoints only (taxonomy, genome, gene, biosample, virus). No data-file downloads yet — nothing returns actual FASTA/GFF/genome files, just JSON reports about them.
-- **E-utilities**: `einfo`, `esearch`, `esummary`, `elink`, `elink_available`. No `efetch` (full record retrieval — FASTA, GenBank flat file, abstracts), no history-server support (`epost`/`WebEnv`/`query_key`) for batches too large for a URL.
+- **E-utilities**: `einfo`, `esearch`, `esummary`, `elink`, `elink_available`, `efetch`, `epost`. History-server (`WebEnv`/`query_key`) support is threaded through `esearch`/`esummary`/`efetch`/`elink` for batches too large for a URL. ✅ Done.
 - **Bridge**: connects `esearch`/`esummary` results to Datasets entities for `gene`, `taxonomy`, `assembly`, `biosample`.
 - **BLAST**: submit/poll/fetch wrapped behind a blocking `client.blast()`, plus an async prototype (`AsyncNCBIClient`) scoped to BLAST only.
 - **Nothing SRA-related exists yet.** No download support, no submission support.
@@ -12,10 +12,10 @@
 
 ### Phase 1 — foundational, low-risk, pure API wrapping
 
-**Flesh out E-utilities**
-- `efetch`: retrieve full records (FASTA, GenBank flat file, XML) by UID. This is the biggest gap in eutils today — `search`/`esummary` can find and summarize records but never fetch the actual sequence/record content.
+**Flesh out E-utilities** ✅ Done
+- `efetch`: retrieve full records (FASTA, GenBank flat file, XML) by UID, or by a history-server handle.
 - `epost` + history server (`WebEnv`/`query_key`) support threaded through `esearch`/`esummary`/`efetch`/`elink`, for ID lists too large to pass as a URL parameter.
-- Lower priority: `espell`, `egquery`, `ecitmatch` — add only if something concrete needs them.
+- Lower priority, not yet done: `espell`, `egquery`, `ecitmatch` — add only if something concrete needs them.
 
 **Datasets "download" endpoints**
 - NCBI Datasets v2 has separate `/genome/.../download`, `/gene/.../download` endpoints (distinct from the `..._report` endpoints already wrapped) that return an actual zip package: FASTA, GFF3/GTF/GBFF annotation, and a data catalog.
@@ -54,7 +54,7 @@
 
 ## Suggested order
 
-1. `efetch` + history server support (eutils)
+1. ~~`efetch` + history server support (eutils)~~ ✅ Done
 2. Datasets download endpoints (genome/gene packages)
 3. SRA `.sra`/FASTQ download (NCBI-default, ENA-convenience)
 4. BioSample metadata + associated-file glue (assemblies, FASTQs)

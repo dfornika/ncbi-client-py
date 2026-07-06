@@ -84,15 +84,17 @@ for assembly in client.fetch_all("genome-dataset-reports-by-taxon", {"taxons": [
 
 ### E-utilities methods
 
-These query NCBI's Entrez system directly. All return parsed JSON as dicts/lists.
+These query NCBI's Entrez system directly. Most return parsed JSON as dicts/lists — the exception is `efetch`, which returns raw text (FASTA, GenBank flat file, XML, ...) since NCBI doesn't render arbitrary record types as JSON, and `epost`, which only ever speaks XML on the wire (parsed internally into a plain dict).
 
 | Method | Description |
 |--------|-------------|
 | `einfo()` | List all 39 Entrez database names |
 | `einfo(db)` | Get metadata for a specific database (fields, links, record count) |
 | `esearch(db, term, **opts)` | Keyword search → `{"ids": [...], "count": int, "retmax": int, "retstart": int}` |
-| `esummary(db, ids)` | Fetch document summaries for a list of UIDs → `list[dict]` |
-| `elink(dbfrom, ids, **opts)` | Find linked UIDs across databases → `list[{"dbto", "linkname", "ids"}]` |
+| `esummary(db, ids=None, *, webenv=None, query_key=None)` | Fetch document summaries for a list of UIDs (or a history-server handle) → `list[dict]` |
+| `efetch(db, ids=None, *, rettype, webenv=None, query_key=None, retmode="text")` | Retrieve full records (FASTA, GenBank flat file, ...) → raw string |
+| `epost(db, ids)` | Upload an ID list to the history server → `{"webenv": str, "query_key": int}` |
+| `elink(dbfrom, ids=None, **opts)` | Find linked UIDs across databases → `list[{"dbto", "linkname", "ids"}]` |
 | `elink_available(dbfrom, ids)` | List available link types → `list[{"linkname", "dbto", "menutag"}]` |
 
 ```python
@@ -101,6 +103,23 @@ results = client.esearch("pubmed", "CRISPR cas9 review", retmax=5)
 summaries = client.esummary("pubmed", results["ids"])
 for s in summaries:
     print(s["uid"], s.get("title", "")[:80])
+
+# Fetch a FASTA record directly
+fasta = client.efetch("nucleotide", ["NM_007294"], rettype="fasta")
+```
+
+#### History server (large ID lists)
+
+`esearch(usehistory=True)` and `epost` both give you a `webenv`/`query_key` handle that `esummary`/`efetch`/`elink` accept in place of an explicit `ids` list — useful once an ID list is too large to comfortably pass around or re-send:
+
+```python
+# Post a large ID list once, get back a handle instead of resending IDs
+history = client.epost("gene", large_id_list)
+summaries = client.esummary("gene", webenv=history["webenv"], query_key=history["query_key"])
+
+# Or start directly from esearch
+search = client.esearch("nucleotide", "BRCA1[gene]", usehistory=True)
+fasta = client.efetch("nucleotide", webenv=search["webenv"], query_key=search["query_key"], rettype="fasta")
 ```
 
 ### Bridge methods
