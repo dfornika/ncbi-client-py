@@ -3,7 +3,7 @@ import time
 import httpx
 import pytest
 
-from ncbi_client.throttle import NCBIAPIError, RateLimiter, with_retry
+from ncbi_client.throttle import MinIntervalLimiter, NCBIAPIError, RateLimiter, with_retry
 
 
 def test_rate_limiter_acquire():
@@ -52,6 +52,21 @@ def test_with_retry_retries_429():
     result = with_retry(rl, flaky)
     assert result == "ok"
     assert call_count == 3
+
+
+def test_min_interval_limiter_first_acquire_does_not_block():
+    limiter = MinIntervalLimiter(0.2)
+    start = time.monotonic()
+    limiter.acquire()
+    assert time.monotonic() - start < 0.05
+
+
+def test_min_interval_limiter_blocks_until_interval_elapses():
+    limiter = MinIntervalLimiter(0.2)
+    limiter.acquire()
+    start = time.monotonic()
+    limiter.acquire()
+    assert time.monotonic() - start >= 0.15
 
 
 def test_with_retry_exhausted():
