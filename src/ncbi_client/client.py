@@ -98,14 +98,20 @@ class NCBIClient:
     def esearch(self, db, term, **opts):
         return eutils.esearch(self, db, term, **opts)
 
-    def esummary(self, db, ids):
-        return eutils.esummary(self, db, ids)
+    def esummary(self, db, ids=None, **opts):
+        return eutils.esummary(self, db, ids, **opts)
 
-    def elink(self, dbfrom, ids, **opts):
+    def elink(self, dbfrom, ids=None, **opts):
         return eutils.elink(self, dbfrom, ids, **opts)
 
     def elink_available(self, dbfrom, ids):
         return eutils.elink_available(self, dbfrom, ids)
+
+    def efetch(self, db, ids=None, **opts):
+        return eutils.efetch(self, db, ids, **opts)
+
+    def epost(self, db, ids):
+        return eutils.epost(self, db, ids)
 
     # --- Bridge ---
 
