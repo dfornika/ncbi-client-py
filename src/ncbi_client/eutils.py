@@ -170,8 +170,14 @@ def elink_available(client: NCBIClient, dbfrom: str, ids) -> list[dict]:
 
 
 def efetch(
-    client: NCBIClient, db: str, ids=None, *, webenv: str | None = None, query_key=None,
-    rettype: str, retmode: str = "text",
+    client: NCBIClient,
+    db: str,
+    ids=None,
+    *,
+    rettype: str,
+    webenv: str | None = None,
+    query_key=None,
+    retmode: str = "text",
 ) -> str:
     """Retrieve full records (FASTA, GenBank flat file, XML, ...).
 
