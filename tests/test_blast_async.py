@@ -6,7 +6,6 @@ from httpx import Response
 
 from ncbi_client import blast_async
 from ncbi_client.blast import BlastError
-from ncbi_client.throttle import AsyncMinIntervalLimiter
 from tests.test_blast import JSON2_S_RESPONSE
 
 BLAST_URL = "https://blast.ncbi.nlm.nih.gov/Blast.cgi"
@@ -85,10 +84,6 @@ async def test_concurrent_searches_overlap_in_flight(async_client):
     calls interleave on one event loop instead of one search fully finishing
     before the next starts, the way the sync client necessarily would.
     """
-    # The default 10s-between-requests policy would dominate this test's
-    # runtime and mask any concurrency; the demo isn't about the rate limit.
-    async_client.blast_rate_limiter = AsyncMinIntervalLimiter(0.0)
-
     in_flight = 0
     max_in_flight = 0
 
@@ -108,12 +103,12 @@ async def test_concurrent_searches_overlap_in_flight(async_client):
         respx.post(BLAST_URL).mock(side_effect=side_effect)
         respx.get(BLAST_URL).mock(side_effect=side_effect)
 
-        start = asyncio.get_event_loop().time()
+        start = asyncio.get_running_loop().time()
         await asyncio.gather(
             blast_async.search(async_client, "ACGT", program="blastn", database="core_nt"),
             blast_async.search(async_client, "TTGG", program="blastn", database="core_nt"),
         )
-        elapsed = asyncio.get_event_loop().time() - start
+        elapsed = asyncio.get_running_loop().time() - start
 
     # Two searches x 3 requests each x 0.03s = 0.18s if fully serialized;
     # concurrent execution should land close to a single search's 0.09s.

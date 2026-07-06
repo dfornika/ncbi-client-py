@@ -79,7 +79,7 @@ async def search(
     if submission["rtoe"]:
         await asyncio.sleep(submission["rtoe"])
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout if timeout is not None else None
     while True:
         state = await status(client, rid)
