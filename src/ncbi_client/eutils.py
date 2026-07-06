@@ -209,7 +209,12 @@ def _parse_epost_response(body: str) -> dict:
     if webenv is None or query_key is None:
         raise NCBIAPIError(f"epost response missing WebEnv/QueryKey: {body!r}")
 
-    return {"webenv": webenv, "query_key": int(query_key)}
+    try:
+        query_key_int = int(query_key)
+    except ValueError as e:
+        raise NCBIAPIError(f"epost response has non-integer QueryKey: {query_key!r} (body={body!r})") from e
+
+    return {"webenv": webenv, "query_key": query_key_int}
 
 
 def epost(client: NCBIClient, db: str, ids) -> dict:
