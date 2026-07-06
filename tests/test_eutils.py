@@ -170,6 +170,18 @@ def test_epost_malformed_response(client):
             eutils.epost(client, "gene", ["672"])
 
 
+def test_epost_non_integer_query_key(client):
+    with respx.mock:
+        respx.post("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/epost.fcgi").mock(
+            return_value=Response(
+                200,
+                text="<ePostResult><QueryKey>not-a-number</QueryKey><WebEnv>MCID_abc123</WebEnv></ePostResult>",
+            )
+        )
+        with pytest.raises(NCBIAPIError):
+            eutils.epost(client, "gene", ["672"])
+
+
 def test_esearch_usehistory(client):
     with respx.mock:
         route = respx.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi").mock(
