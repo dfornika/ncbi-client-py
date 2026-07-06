@@ -193,6 +193,10 @@ BLAST requests use a separate limiter enforcing NCBI's "no more than one request
 
 Retryable errors (HTTP 429, 5xx) are automatically retried up to 3 times with exponential backoff.
 
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for planned work — SRA downloads, BioSample submission, and fleshing out E-utilities/Datasets coverage.
+
 ## Development
 
 ```bash
