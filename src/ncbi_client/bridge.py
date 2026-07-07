@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from xml.etree import ElementTree
 
 from ncbi_client import datasets, eutils
+from ncbi_client.throttle import NCBIAPIError
 
 if TYPE_CHECKING:
     from ncbi_client.client import NCBIClient
@@ -36,6 +37,7 @@ DB_TO_DATASETS = {
 }
 
 _ELINK_ID_CAP = 200
+_ESUMMARY_BATCH_SIZE = 200
 
 
 def search(client: NCBIClient, db: str, term: str, **opts) -> dict:
@@ -113,7 +115,10 @@ def _parse_sra_run_accessions(runs_xml: str) -> list[str]:
     # esummary's db="sra" DocSum embeds a fragment of sibling <Run/> elements
     # (not a single root) as an XML string inside a JSON field, rather than
     # returning structured JSON - wrap it so ElementTree can parse it.
-    root = ElementTree.fromstring(f"<root>{runs_xml}</root>")
+    try:
+        root = ElementTree.fromstring(f"<root>{runs_xml}</root>")
+    except ElementTree.ParseError as e:
+        raise NCBIAPIError(f"esummary db=sra returned an unparseable 'runs' fragment: {runs_xml!r}") from e
     return [acc for el in root.findall("Run") if (acc := el.get("acc"))]
 
 
@@ -137,8 +142,9 @@ def biosample_sra_run_accessions(client: NCBIClient, biosample_accession: str) -
     if not sra_uids:
         return []
 
-    summaries = eutils.esummary(client, "sra", sra_uids)
     run_accessions = []
-    for summary in summaries:
-        run_accessions.extend(_parse_sra_run_accessions(summary.get("runs") or ""))
+    for i in range(0, len(sra_uids), _ESUMMARY_BATCH_SIZE):
+        batch = sra_uids[i : i + _ESUMMARY_BATCH_SIZE]
+        for summary in eutils.esummary(client, "sra", batch):
+            run_accessions.extend(_parse_sra_run_accessions(summary.get("runs") or ""))
     return run_accessions

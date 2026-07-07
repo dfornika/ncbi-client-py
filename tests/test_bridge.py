@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from ncbi_client import bridge
 
 
@@ -139,6 +141,11 @@ def test_parse_sra_run_accessions_empty():
     assert bridge._parse_sra_run_accessions("") == []
 
 
+def test_parse_sra_run_accessions_malformed_raises_clear_error():
+    with pytest.raises(bridge.NCBIAPIError, match="unparseable"):
+        bridge._parse_sra_run_accessions("<Run acc=\"SRR000001\"")
+
+
 def test_biosample_sra_run_accessions(client):
     with patch.object(bridge.eutils, "esearch", return_value={"ids": ["2604091"], "count": 1}) as mock_esearch:
         with patch.object(
@@ -175,3 +182,24 @@ def test_biosample_sra_run_accessions_no_sra_links(client):
             result = bridge.biosample_sra_run_accessions(client, "SAMN02604091")
 
     assert result == []
+
+
+def test_biosample_sra_run_accessions_batches_large_id_lists(client):
+    # A BioSample with more linked SRA records than _ESUMMARY_BATCH_SIZE must
+    # not silently truncate: every id should still make it into some batch.
+    sra_uids = [str(i) for i in range(250)]
+
+    def fake_esummary(client, db, ids):
+        return [{"uid": uid, "runs": f'<Run acc="SRR{uid}"/>'} for uid in ids]
+
+    with patch.object(bridge.eutils, "esearch", return_value={"ids": ["2604091"], "count": 1}):
+        with patch.object(bridge.eutils, "elink", return_value=[{"dbto": "sra", "ids": sra_uids}]):
+            with patch.object(bridge.eutils, "esummary", side_effect=fake_esummary) as mock_esummary:
+                result = bridge.biosample_sra_run_accessions(client, "SAMN02604091")
+
+    assert mock_esummary.call_count == 2
+    assert len(mock_esummary.call_args_list[0].args[2]) == 200
+    assert len(mock_esummary.call_args_list[1].args[2]) == 50
+    assert len(result) == 250
+    assert result[0] == "SRR0"
+    assert result[-1] == "SRR249"
