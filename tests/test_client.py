@@ -97,3 +97,49 @@ def test_einfo_delegates(client):
         result = client.einfo()
 
     assert result == ["gene", "pubmed"]
+
+
+def test_biosample_assembly_accessions_delegates(client):
+    from ncbi_client import bridge
+    with patch.object(bridge, "biosample_assembly_accessions", return_value=["GCF_000005845.2"]) as mock_fn:
+        result = client.biosample_assembly_accessions("SAMN02604091")
+
+    mock_fn.assert_called_once_with(client, "SAMN02604091")
+    assert result == ["GCF_000005845.2"]
+
+
+def test_biosample_sra_run_accessions_delegates(client):
+    from ncbi_client import bridge
+    with patch.object(bridge, "biosample_sra_run_accessions", return_value=["SRR000001"]) as mock_fn:
+        result = client.biosample_sra_run_accessions("SAMN02604091")
+
+    mock_fn.assert_called_once_with(client, "SAMN02604091")
+    assert result == ["SRR000001"]
+
+
+def test_download_biosample_assemblies(client, tmp_path):
+    from ncbi_client import bridge, datasets
+
+    with patch.object(bridge, "biosample_assembly_accessions", return_value=["GCF_000005845.2", "GCA_000005845.2"]):
+        with patch.object(datasets, "download", side_effect=lambda c, op, params, dest: dest) as mock_download:
+            result = client.download_biosample_assemblies("SAMN02604091", tmp_path)
+
+    assert result == [tmp_path / "GCF_000005845.2.zip", tmp_path / "GCA_000005845.2.zip"]
+    assert mock_download.call_count == 2
+    mock_download.assert_any_call(
+        client, "genome-accession-download", {"accessions": ["GCF_000005845.2"]}, tmp_path / "GCF_000005845.2.zip"
+    )
+
+
+def test_download_biosample_fastqs(client, tmp_path):
+    from ncbi_client import bridge, sra
+
+    with patch.object(bridge, "biosample_sra_run_accessions", return_value=["SRR000001", "SRR000002"]):
+        with patch.object(sra, "download_fastq", side_effect=lambda c, acc, d: [d / f"{acc}.fastq.gz"]) as mock_dl:
+            result = client.download_biosample_fastqs("SAMN02604091", tmp_path)
+
+    assert result == {
+        "SRR000001": [tmp_path / "SRR000001.fastq.gz"],
+        "SRR000002": [tmp_path / "SRR000002.fastq.gz"],
+    }
+    assert mock_dl.call_count == 2

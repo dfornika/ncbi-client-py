@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import httpx
 
@@ -134,6 +135,26 @@ class NCBIClient:
 
     def discover_links(self, db, uid):
         return bridge.discover_links(self, db, uid)
+
+    def biosample_assembly_accessions(self, biosample_accession: str) -> list[str]:
+        return bridge.biosample_assembly_accessions(self, biosample_accession)
+
+    def biosample_sra_run_accessions(self, biosample_accession: str) -> list[str]:
+        return bridge.biosample_sra_run_accessions(self, biosample_accession)
+
+    def download_biosample_assemblies(self, biosample_accession: str, destination_dir, **opts) -> list[Path]:
+        """Download the genome package(s) for every assembly linked to a BioSample."""
+        destination_dir = Path(destination_dir)
+        accessions = bridge.biosample_assembly_accessions(self, biosample_accession)
+        return [
+            datasets.download(self, "genome-accession-download", {"accessions": [acc], **opts}, destination_dir / f"{acc}.zip")
+            for acc in accessions
+        ]
+
+    def download_biosample_fastqs(self, biosample_accession: str, destination_dir) -> dict[str, list[Path]]:
+        """Download FASTQ files (via ENA) for every SRA run linked to a BioSample."""
+        run_accessions = bridge.biosample_sra_run_accessions(self, biosample_accession)
+        return {run: sra.download_fastq(self, run, destination_dir) for run in run_accessions}
 
     # --- SRA ---
 

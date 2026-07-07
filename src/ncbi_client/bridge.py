@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from xml.etree import ElementTree
 
 from ncbi_client import datasets, eutils
+from ncbi_client.throttle import NCBIAPIError
 
 if TYPE_CHECKING:
     from ncbi_client.client import NCBIClient
@@ -30,11 +32,12 @@ DB_TO_DATASETS = {
         "entity_type": "biosample",
         "operation": "bio-sample-dataset-report",
         "id_key": "accessions",
-        "id_from": "biosampleaccn",
+        "id_from": "accession",
     },
 }
 
 _ELINK_ID_CAP = 200
+_ESUMMARY_BATCH_SIZE = 200
 
 
 def search(client: NCBIClient, db: str, term: str, **opts) -> dict:
@@ -98,3 +101,50 @@ def follow_elink(client: NCBIClient, db: str, uid: str, linkname: str) -> dict:
 
 def discover_links(client: NCBIClient, db: str, uid: str) -> list[dict]:
     return eutils.elink_available(client, db, uid)
+
+
+def biosample_assembly_accessions(client: NCBIClient, biosample_accession: str) -> list[str]:
+    """Resolve a BioSample accession to its linked assembly accession(s) (GenBank and/or RefSeq)."""
+    page = datasets.fetch(
+        client, "genome-dataset-reports-by-biosample-id", {"biosample_ids": [biosample_accession]}, "assembly"
+    )
+    return [r["accession"] for r in page["results"] if r.get("accession")]
+
+
+def _parse_sra_run_accessions(runs_xml: str) -> list[str]:
+    # esummary's db="sra" DocSum embeds a fragment of sibling <Run/> elements
+    # (not a single root) as an XML string inside a JSON field, rather than
+    # returning structured JSON - wrap it so ElementTree can parse it.
+    try:
+        root = ElementTree.fromstring(f"<root>{runs_xml}</root>")
+    except ElementTree.ParseError as e:
+        raise NCBIAPIError(f"esummary db=sra returned an unparseable 'runs' fragment: {runs_xml!r}") from e
+    return [acc for el in root.findall("Run") if (acc := el.get("acc"))]
+
+
+def biosample_sra_run_accessions(client: NCBIClient, biosample_accession: str) -> list[str]:
+    """Resolve a BioSample accession to its linked SRA run accession(s) (SRR/ERR/DRR).
+
+    BioSample's own UID (used by elink) isn't the accession, so this first
+    esearches for the UID, then follows the biosample_sra elink, then parses
+    run accessions out of each linked SRA UID's esummary DocSum.
+    """
+    search_result = eutils.esearch(client, "biosample", f"{biosample_accession}[accn]")
+    if not search_result["ids"]:
+        return []
+
+    uid = search_result["ids"][0]
+    links = eutils.elink(client, "biosample", uid, linkname="biosample_sra")
+    if not links:
+        return []
+
+    sra_uids = links[0]["ids"]
+    if not sra_uids:
+        return []
+
+    run_accessions = []
+    for i in range(0, len(sra_uids), _ESUMMARY_BATCH_SIZE):
+        batch = sra_uids[i : i + _ESUMMARY_BATCH_SIZE]
+        for summary in eutils.esummary(client, "sra", batch):
+            run_accessions.extend(_parse_sra_run_accessions(summary.get("runs") or ""))
+    return run_accessions
