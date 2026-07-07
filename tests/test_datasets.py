@@ -123,7 +123,7 @@ def test_download_genome(client, tmp_path):
 
     assert result == destination
     assert destination.read_bytes() == zip_bytes
-    assert list(tmp_path.glob("*.part")) == []
+    assert [p for p in tmp_path.iterdir() if p.suffix == ".part"] == []
 
 
 def test_download_retries_on_429(client, tmp_path):
@@ -160,4 +160,4 @@ def test_download_not_found_leaves_no_partial_file(client, tmp_path):
             raise AssertionError("expected HTTPStatusError")
 
     assert not destination.exists()
-    assert list(tmp_path.glob("*")) == []
+    assert list(tmp_path.iterdir()) == []
