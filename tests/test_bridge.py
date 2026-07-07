@@ -49,6 +49,22 @@ def test_lookup_dataset_entity_no_mapping(client):
     assert result is None
 
 
+def test_lookup_dataset_entity_biosample(client):
+    # Regression test: a BioSample's own esummary carries its accession under
+    # "accession", not "biosampleaccn" (that field only appears on summaries
+    # from other dbs, e.g. assembly, as a cross-reference back to BioSample).
+    fake_biosample = {"accession": "SAMN02604091"}
+    with patch.object(bridge.datasets, "fetch_one", return_value=fake_biosample) as mock_fetch:
+        result = bridge.lookup_dataset_entity(
+            client, "biosample", {"uid": "2604091", "accession": "SAMN02604091"}
+        )
+
+    assert result == fake_biosample
+    mock_fetch.assert_called_once_with(
+        client, "bio-sample-dataset-report", {"accessions": ["SAMN02604091"]}, "biosample"
+    )
+
+
 def test_follow_elink_to_datasets(client):
     fake_page = {"results": [{"gene_id": "672"}], "total_count": 1}
     with patch.object(bridge.eutils, "elink", return_value=[{"dbto": "gene", "linkname": "x_gene", "ids": ["672"]}]):
@@ -85,3 +101,77 @@ def test_discover_links(client):
 
     assert len(result) == 1
     assert result[0]["linkname"] == "gene_pubmed"
+
+
+def test_biosample_assembly_accessions(client):
+    fake_page = {
+        "results": [{"accession": "GCA_000005845.2"}, {"accession": "GCF_000005845.2"}],
+        "total_count": 2,
+    }
+    with patch.object(bridge.datasets, "fetch", return_value=fake_page) as mock_fetch:
+        result = bridge.biosample_assembly_accessions(client, "SAMN02604091")
+
+    assert result == ["GCA_000005845.2", "GCF_000005845.2"]
+    mock_fetch.assert_called_once_with(
+        client, "genome-dataset-reports-by-biosample-id", {"biosample_ids": ["SAMN02604091"]}, "assembly"
+    )
+
+
+def test_biosample_assembly_accessions_skips_missing_accession(client):
+    fake_page = {"results": [{"accession": "GCF_000005845.2"}, {}], "total_count": 2}
+    with patch.object(bridge.datasets, "fetch", return_value=fake_page):
+        result = bridge.biosample_assembly_accessions(client, "SAMN02604091")
+
+    assert result == ["GCF_000005845.2"]
+
+
+def test_parse_sra_run_accessions_single():
+    runs_xml = '<Run acc="SRR10971019" total_spots="95514"/>'
+    assert bridge._parse_sra_run_accessions(runs_xml) == ["SRR10971019"]
+
+
+def test_parse_sra_run_accessions_multiple():
+    runs_xml = '<Run acc="SRR000001"/><Run acc="SRR000002"/>'
+    assert bridge._parse_sra_run_accessions(runs_xml) == ["SRR000001", "SRR000002"]
+
+
+def test_parse_sra_run_accessions_empty():
+    assert bridge._parse_sra_run_accessions("") == []
+
+
+def test_biosample_sra_run_accessions(client):
+    with patch.object(bridge.eutils, "esearch", return_value={"ids": ["2604091"], "count": 1}) as mock_esearch:
+        with patch.object(
+            bridge.eutils,
+            "elink",
+            return_value=[{"dbto": "sra", "linkname": "biosample_sra", "ids": ["13428597", "13428595"]}],
+        ) as mock_elink:
+            with patch.object(
+                bridge.eutils,
+                "esummary",
+                return_value=[
+                    {"uid": "13428597", "runs": '<Run acc="SRR13921543"/>'},
+                    {"uid": "13428595", "runs": '<Run acc="SRR13921545"/>'},
+                ],
+            ) as mock_esummary:
+                result = bridge.biosample_sra_run_accessions(client, "SAMN02604091")
+
+    assert result == ["SRR13921543", "SRR13921545"]
+    mock_esearch.assert_called_once_with(client, "biosample", "SAMN02604091[accn]")
+    mock_elink.assert_called_once_with(client, "biosample", "2604091", linkname="biosample_sra")
+    mock_esummary.assert_called_once_with(client, "sra", ["13428597", "13428595"])
+
+
+def test_biosample_sra_run_accessions_no_biosample_found(client):
+    with patch.object(bridge.eutils, "esearch", return_value={"ids": [], "count": 0}):
+        result = bridge.biosample_sra_run_accessions(client, "SAMN00000000")
+
+    assert result == []
+
+
+def test_biosample_sra_run_accessions_no_sra_links(client):
+    with patch.object(bridge.eutils, "esearch", return_value={"ids": ["2604091"], "count": 1}):
+        with patch.object(bridge.eutils, "elink", return_value=[]):
+            result = bridge.biosample_sra_run_accessions(client, "SAMN02604091")
+
+    assert result == []
