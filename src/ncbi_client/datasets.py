@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Generator
+import os
+import tempfile
+from collections.abc import Generator
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import httpx
 
 from ncbi_client.throttle import with_retry
 
@@ -8,6 +14,11 @@ if TYPE_CHECKING:
     from ncbi_client.client import NCBIClient
 
 DATASETS_BASE_URL = "https://api.ncbi.nlm.nih.gov/datasets/v2"
+
+# Download endpoints can transfer multi-GB genome packages; give them a much
+# longer read timeout than the client's default 30s, without changing that
+# default for every other (small, JSON) request the client makes.
+DOWNLOAD_TIMEOUT = httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0)
 
 OPERATIONS = {
     "taxonomy-data-report": {
@@ -107,6 +118,19 @@ OPERATIONS = {
     },
 }
 
+DOWNLOAD_OPERATIONS = {
+    "genome-accession-download": {
+        "method": "GET",
+        "path": "/genome/accession/{accessions}/download",
+        "path_params": ["accessions"],
+    },
+    "gene-id-download": {
+        "method": "GET",
+        "path": "/gene/id/{gene_ids}/download",
+        "path_params": ["gene_ids"],
+    },
+}
+
 REPORT_EXTRACTORS = {
     "taxonomy": "taxonomy",
     "gene": "gene",
@@ -147,6 +171,49 @@ def _do_request(client: NCBIClient, method: str, url: str, query: dict) -> dict:
     resp = client.http.request(method, url, params=query, headers=headers)
     resp.raise_for_status()
     return resp.json()
+
+
+def _do_download_request(client: NCBIClient, method: str, url: str, query: dict, destination: Path) -> None:
+    headers = {}
+    if client.api_key:
+        headers["api-token"] = client.api_key
+
+    # Stream to a sibling temp file and rename into place on success, so a
+    # failed or interrupted download never leaves a corrupt file at
+    # `destination`.
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=str(destination.parent), prefix=f".{destination.name}.", suffix=".part"
+    )
+    try:
+        with os.fdopen(tmp_fd, "wb") as f:
+            with client.http.stream(method, url, params=query, headers=headers, timeout=DOWNLOAD_TIMEOUT) as resp:
+                resp.raise_for_status()
+                for chunk in resp.iter_bytes():
+                    f.write(chunk)
+        os.replace(tmp_path, destination)
+    except BaseException:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
+
+
+def download(client: NCBIClient, operation: str, params: dict, destination: str | os.PathLike) -> Path:
+    """Download a Datasets v2 zip package (genome/gene data package) to `destination`.
+
+    Unlike fetch/fetch_one/fetch_all, this doesn't parse a JSON envelope: the
+    response body is streamed directly to disk. A 429/5xx encountered before
+    or while headers arrive is retried like any other request, but a
+    connection drop mid-stream (after the body has started arriving) is not
+    retried and is raised to the caller as-is — safely resuming a partial
+    download would need Range-request support, which isn't implemented yet.
+    """
+    op = DOWNLOAD_OPERATIONS[operation]
+    url, query = _build_request(op, params)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    client.rate_limiter.acquire()
+    with_retry(client.rate_limiter, lambda: _do_download_request(client, op["method"], url, query, destination))
+    return destination
 
 
 def fetch(client: NCBIClient, operation: str, params: dict, entity_type: str) -> dict:
