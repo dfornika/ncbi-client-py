@@ -191,4 +191,7 @@ def download_fastq(client: NCBIClient, accession: str, destination_dir: str | os
         dest = destination_dir / url.rsplit("/", 1)[-1]
         with_retry(None, lambda u=url, d=dest: _do_http_download(client, u, d))
         downloaded.append(dest)
+
+    if not downloaded:
+        raise SRAError(f"ENA's fastq_ftp field for {accession!r} contained no usable file paths: {fastq_ftp!r}")
     return downloaded

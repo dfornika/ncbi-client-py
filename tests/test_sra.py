@@ -159,6 +159,15 @@ def test_download_fastq_empty_fastq_ftp_raises(client, tmp_path):
             sra.download_fastq(client, "SRR390728", tmp_path)
 
 
+def test_download_fastq_delimiter_only_fastq_ftp_raises(client, tmp_path):
+    # A non-empty fastq_ftp that yields zero usable paths after split/strip
+    # (e.g. stray delimiters/whitespace) must raise, not silently return [].
+    with respx.mock:
+        respx.get(sra.ENA_FILEREPORT_URL).mock(return_value=Response(200, json=_ena_record(" ; ")))
+        with pytest.raises(sra.SRAError, match="no usable file paths"):
+            sra.download_fastq(client, "SRR390728", tmp_path)
+
+
 def test_download_fastq_no_results_raises(client, tmp_path):
     with respx.mock:
         respx.get(sra.ENA_FILEREPORT_URL).mock(return_value=Response(200, json=[]))
