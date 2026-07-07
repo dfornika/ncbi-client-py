@@ -4,7 +4,7 @@ import os
 
 import httpx
 
-from ncbi_client import blast, bridge, datasets, eutils
+from ncbi_client import blast, bridge, datasets, eutils, sra
 from ncbi_client.throttle import MinIntervalLimiter, RateLimiter
 
 
@@ -134,6 +134,17 @@ class NCBIClient:
 
     def discover_links(self, db, uid):
         return bridge.discover_links(self, db, uid)
+
+    # --- SRA ---
+
+    def download_sra(self, accession: str, destination):
+        return sra.download_sra(self, accession, destination)
+
+    def copy_sra_to_s3(self, accession: str, dest_bucket: str, dest_key: str | None = None, *, s3_client=None, **copy_kwargs):
+        return sra.copy_sra_to_s3(accession, dest_bucket, dest_key, s3_client=s3_client, **copy_kwargs)
+
+    def download_fastq(self, accession: str, destination_dir):
+        return sra.download_fastq(self, accession, destination_dir)
 
     # --- BLAST ---
 

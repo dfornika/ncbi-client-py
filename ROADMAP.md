@@ -6,7 +6,7 @@
 - **E-utilities**: `einfo`, `esearch`, `esummary`, `elink`, `elink_available`, `efetch`, `epost`. History-server (`WebEnv`/`query_key`) support is threaded through `esearch`/`esummary`/`efetch`/`elink` for batches too large for a URL. ✅ Done.
 - **Bridge**: connects `esearch`/`esummary` results to Datasets entities for `gene`, `taxonomy`, `assembly`, `biosample`.
 - **BLAST**: submit/poll/fetch wrapped behind a blocking `client.blast()`, plus an async prototype (`AsyncNCBIClient`) scoped to BLAST only.
-- **Nothing SRA-related exists yet.** No download support, no submission support.
+- **SRA**: `client.download_sra(...)` (public S3 Open Data bucket first, SDL resolver fallback), `client.copy_sra_to_s3(...)` (direct S3-to-S3 server-side copy via boto3, optional `[s3]` extra), `client.download_fastq(...)` (ENA Portal API convenience path). All take a run accession string directly — no BioSample→SRA-run resolution yet. No submission support.
 
 ## Proposed phases
 
@@ -29,10 +29,11 @@
 - Associated assembly files: BioSample → linked assembly accession (via `elink` or the existing `genome-dataset-reports-by-biosample-id` operation) → Datasets download endpoint (Phase 1).
 - Associated FASTQ files: BioSample → linked SRA run accessions (via `elink`, `biosample` → `sra`) → SRA FASTQ/`.sra` download (below).
 
-**SRA FASTQ / `.sra` download**
-- Design decision (resolved): default to NCBI's own delivery mechanism, returning the raw `.sra` file (or a signed cloud URL to it) and leaving FASTQ conversion (`fasterq-dump` or equivalent) to the caller — keeps the default path NCBI-only and doesn't force a conversion cost on every call.
-- Add the ENA Portal API (`https://www.ebi.ac.uk/ena/portal/api/filereport?...&fields=fastq_ftp`) as an opt-in convenience path that returns direct `fastq.gz` URLs over plain HTTPS — no local conversion needed, but depends on an EBI/ENA service rather than NCBI's own infrastructure. Document this dependency clearly wherever it's used.
-- Needs research before implementation: confirm NCBI's current officially-supported way to fetch `.sra` bytes/signed URLs by run accession (the "SRA Data Locator" / cloud delivery service) since this isn't a stable, well-documented REST endpoint the way Datasets/eutils are.
+**SRA FASTQ / `.sra` download** ✅ Done
+- `download_sra`: tries NCBI's public S3 Open Data bucket (`sra-pub-run-odp`, plain HTTPS GET, object key `sra/{accession}/{accession}`) first; falls back to the SDL resolver API (`locate.ncbi.nlm.nih.gov/sdl/2/retrieve`) on a 403/404 (not every run is mirrored to the ODP bucket — dbGaP-protected, cold-storage, or lag-affected runs can be missing). Leaves FASTQ conversion (`fasterq-dump` or equivalent) to the caller.
+- `copy_sra_to_s3`: direct server-side S3-to-S3 copy of the raw `.sra` object into a caller-owned bucket via boto3's high-level `copy()` (handles multipart for >5GB files), without routing bytes through the local machine. boto3 is an optional extra (`ncbi-client[s3]`), not a required dependency. AWS S3 destinations only (SDL can resolve GCS locations too, but that's out of scope).
+- `download_fastq`: opt-in convenience path via the ENA Portal API (`https://www.ebi.ac.uk/ena/portal/api/filereport?...&fields=fastq_ftp`), returning actual downloaded `fastq.gz` file(s) — no local conversion needed, but depends on EBI/ENA rather than NCBI. Raises a clear error if ENA has no auto-converted FASTQ for a run (10x/cellranger, PacBio/Nanopore native, Complete Genomics native submissions).
+- Not done: BioSample → SRA-run-accession resolution (still needs a run accession string as input) — that's the next item below.
 
 ### Phase 3 — higher complexity, needs care
 
@@ -56,7 +57,7 @@
 
 1. ~~`efetch` + history server support (eutils)~~ ✅ Done
 2. ~~Datasets download endpoints (genome/gene packages)~~ ✅ Done
-3. SRA `.sra`/FASTQ download (NCBI-default, ENA-convenience)
+3. ~~SRA `.sra`/FASTQ download (NCBI-default, ENA-convenience)~~ ✅ Done
 4. BioSample metadata + associated-file glue (assemblies, FASTQs)
 5. BioProject support, if it turns out to matter for the above
 6. BioSample creation + SRA read upload (research spike first, sandbox-only)
