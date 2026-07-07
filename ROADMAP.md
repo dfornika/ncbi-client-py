@@ -2,7 +2,7 @@
 
 ## Where things stand
 
-- **Datasets v2**: report/metadata endpoints only (taxonomy, genome, gene, biosample, virus). No data-file downloads yet — nothing returns actual FASTA/GFF/genome files, just JSON reports about them.
+- **Datasets v2**: report/metadata endpoints (taxonomy, genome, gene, biosample, virus), plus genome and gene package downloads (`client.download_genome(...)`, `client.download_gene(...)`) that stream a zip (FASTA/GFF/annotation/data catalog) to disk. ✅ Done.
 - **E-utilities**: `einfo`, `esearch`, `esummary`, `elink`, `elink_available`, `efetch`, `epost`. History-server (`WebEnv`/`query_key`) support is threaded through `esearch`/`esummary`/`efetch`/`elink` for batches too large for a URL. ✅ Done.
 - **Bridge**: connects `esearch`/`esummary` results to Datasets entities for `gene`, `taxonomy`, `assembly`, `biosample`.
 - **BLAST**: submit/poll/fetch wrapped behind a blocking `client.blast()`, plus an async prototype (`AsyncNCBIClient`) scoped to BLAST only.
@@ -17,10 +17,10 @@
 - `epost` + history server (`WebEnv`/`query_key`) support threaded through `esearch`/`esummary`/`efetch`/`elink`, for ID lists too large to pass as a URL parameter.
 - Lower priority, not yet done: `espell`, `egquery`, `ecitmatch` — add only if something concrete needs them.
 
-**Datasets "download" endpoints**
-- NCBI Datasets v2 has separate `/genome/.../download`, `/gene/.../download` endpoints (distinct from the `..._report` endpoints already wrapped) that return an actual zip package: FASTA, GFF3/GTF/GBFF annotation, and a data catalog.
-- This is a new code path, not just a new `OPERATIONS` entry — `datasets.py`'s current `_do_request` assumes a JSON response; downloads need to stream bytes to disk instead.
-- This is also a prerequisite for "BioSample associated assembly files" below, since assembly FASTA/GFF isn't available through any endpoint currently wrapped.
+**Datasets "download" endpoints** ✅ Done
+- `datasets.download(client, operation, params, destination)` plus `client.download_genome(...)`/`client.download_gene(...)` stream a Datasets v2 zip package (`/genome/accession/{accessions}/download`, `/gene/id/{gene_ids}/download`) directly to disk, separate from the JSON `_report` code path.
+- Atomic write (temp file + rename) so a failed/interrupted download never leaves a corrupt file at the destination. Known limitation: a connection drop mid-stream isn't retried (only pre-body 429/5xx are); resuming safely would need `Range` request support, which isn't implemented.
+- This unblocks "BioSample associated assembly files" below, since assembly FASTA/GFF is now reachable via the genome download endpoint.
 
 ### Phase 2 — builds on Phase 1 primitives
 
@@ -55,7 +55,7 @@
 ## Suggested order
 
 1. ~~`efetch` + history server support (eutils)~~ ✅ Done
-2. Datasets download endpoints (genome/gene packages)
+2. ~~Datasets download endpoints (genome/gene packages)~~ ✅ Done
 3. SRA `.sra`/FASTQ download (NCBI-default, ENA-convenience)
 4. BioSample metadata + associated-file glue (assemblies, FASTQs)
 5. BioProject support, if it turns out to matter for the above

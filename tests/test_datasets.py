@@ -1,3 +1,4 @@
+import httpx
 import respx
 from httpx import Response
 
@@ -107,3 +108,56 @@ def test_api_key_header(client):
         datasets.fetch_one(client, "gene-reports-by-id", {"gene_ids": [672]}, "gene")
 
     assert route.calls[0].request.headers["api-token"] == "test-key"
+
+
+def test_download_genome(client, tmp_path):
+    zip_bytes = b"PK\x03\x04fake zip contents"
+    with respx.mock:
+        respx.get("https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/GCF_000001405.40/download").mock(
+            return_value=Response(200, content=zip_bytes)
+        )
+        destination = tmp_path / "genome.zip"
+        result = datasets.download(
+            client, "genome-accession-download", {"accessions": ["GCF_000001405.40"]}, destination
+        )
+
+    assert result == destination
+    assert destination.read_bytes() == zip_bytes
+    assert list(tmp_path.glob("*.part")) == []
+
+
+def test_download_retries_on_429(client, tmp_path):
+    zip_bytes = b"PK\x03\x04retried zip contents"
+    call_count = 0
+
+    def side_effect(request):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return Response(429, headers={"Retry-After": "0"})
+        return Response(200, content=zip_bytes)
+
+    with respx.mock:
+        respx.get("https://api.ncbi.nlm.nih.gov/datasets/v2/gene/id/672/download").mock(side_effect=side_effect)
+        destination = tmp_path / "gene.zip"
+        result = datasets.download(client, "gene-id-download", {"gene_ids": [672]}, destination)
+
+    assert call_count == 2
+    assert result.read_bytes() == zip_bytes
+
+
+def test_download_not_found_leaves_no_partial_file(client, tmp_path):
+    with respx.mock:
+        respx.get("https://api.ncbi.nlm.nih.gov/datasets/v2/gene/id/999999/download").mock(
+            return_value=Response(404, content=b"not found")
+        )
+        destination = tmp_path / "missing.zip"
+        try:
+            datasets.download(client, "gene-id-download", {"gene_ids": [999999]}, destination)
+        except httpx.HTTPStatusError:
+            pass
+        else:
+            raise AssertionError("expected HTTPStatusError")
+
+    assert not destination.exists()
+    assert list(tmp_path.glob("*")) == []

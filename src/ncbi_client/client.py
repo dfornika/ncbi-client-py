@@ -90,6 +90,14 @@ class NCBIClient:
     def fetch_all(self, operation: str, params: dict, entity_type: str):
         return datasets.fetch_all(self, operation, params, entity_type)
 
+    def download_genome(self, accessions, destination, **opts):
+        accessions = list(accessions) if isinstance(accessions, (list, tuple)) else [accessions]
+        return datasets.download(self, "genome-accession-download", {"accessions": accessions, **opts}, destination)
+
+    def download_gene(self, gene_ids, destination, **opts):
+        gene_ids = [int(g) for g in gene_ids] if isinstance(gene_ids, (list, tuple)) else [int(gene_ids)]
+        return datasets.download(self, "gene-id-download", {"gene_ids": gene_ids, **opts}, destination)
+
     # --- E-utilities ---
 
     def einfo(self, db=None):
