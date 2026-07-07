@@ -1,24 +1,17 @@
 from __future__ import annotations
 
 import os
-import tempfile
 from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import httpx
-
+from ncbi_client._download import DOWNLOAD_TIMEOUT, stream_to_path
 from ncbi_client.throttle import with_retry
 
 if TYPE_CHECKING:
     from ncbi_client.client import NCBIClient
 
 DATASETS_BASE_URL = "https://api.ncbi.nlm.nih.gov/datasets/v2"
-
-# Download endpoints can transfer multi-GB genome packages; give them a much
-# longer read timeout than the client's default 30s, without changing that
-# default for every other (small, JSON) request the client makes.
-DOWNLOAD_TIMEOUT = httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0)
 
 OPERATIONS = {
     "taxonomy-data-report": {
@@ -178,22 +171,10 @@ def _do_download_request(client: NCBIClient, method: str, url: str, query: dict,
     if client.api_key:
         headers["api-token"] = client.api_key
 
-    # Stream to a sibling temp file and rename into place on success, so a
-    # failed or interrupted download never leaves a corrupt file at
-    # `destination`.
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(destination.parent), prefix=f".{destination.name}.", suffix=".part"
+    stream_to_path(
+        destination,
+        lambda: client.http.stream(method, url, params=query, headers=headers, timeout=DOWNLOAD_TIMEOUT),
     )
-    try:
-        with os.fdopen(tmp_fd, "wb") as f:
-            with client.http.stream(method, url, params=query, headers=headers, timeout=DOWNLOAD_TIMEOUT) as resp:
-                resp.raise_for_status()
-                for chunk in resp.iter_bytes():
-                    f.write(chunk)
-        os.replace(tmp_path, destination)
-    except BaseException:
-        Path(tmp_path).unlink(missing_ok=True)
-        raise
 
 
 def download(client: NCBIClient, operation: str, params: dict, destination: str | os.PathLike) -> Path:
