@@ -3,6 +3,7 @@ from __future__ import annotations
 import posixpath
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from xml.etree import ElementTree
@@ -211,20 +212,63 @@ def _connect_sftp(
     else:
         ssh.load_system_host_keys()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy() if auto_add_host_key else paramiko.RejectPolicy())
-    # gss_auth/gss_kex (present in older paramiko releases) were dropped from
-    # SSHClient.connect() in paramiko 5.0 - omitted here rather than passed as
-    # False, since GSSAPI auth isn't attempted unless explicitly requested
-    # anyway, and this keeps the call compatible across paramiko versions.
-    ssh.connect(
+    try:
+        # gss_auth/gss_kex (present in older paramiko releases) were dropped
+        # from SSHClient.connect() in paramiko 5.0 - omitted here rather than
+        # passed as False, since GSSAPI auth isn't attempted unless explicitly
+        # requested anyway, and this keeps the call compatible across
+        # paramiko versions.
+        ssh.connect(
+            host,
+            port=port,
+            username=username,
+            password=password,
+            timeout=timeout,
+            allow_agent=False,
+            look_for_keys=False,
+        )
+        return ssh, ssh.open_sftp()
+    except BaseException:
+        # Close the transport if connect() succeeded but open_sftp() (or
+        # anything else here) failed, rather than leaving it to garbage
+        # collection.
+        ssh.close()
+        raise
+
+
+@contextmanager
+def _sftp_session(
+    host: str,
+    username: str | None,
+    password: str | None,
+    *,
+    port: int,
+    sftp_client,
+    auto_add_host_key: bool,
+    known_hosts_path: str | None,
+    connect_timeout: float,
+):
+    """Yield an SFTP client: the caller-supplied `sftp_client` as-is (caller
+    owns its lifecycle), or a freshly connected one that's closed on exit.
+    """
+    if sftp_client is not None:
+        yield sftp_client
+        return
+
+    ssh, sftp = _connect_sftp(
         host,
+        username,
+        password,
         port=port,
-        username=username,
-        password=password,
-        timeout=timeout,
-        allow_agent=False,
-        look_for_keys=False,
+        auto_add_host_key=auto_add_host_key,
+        known_hosts_path=known_hosts_path,
+        timeout=connect_timeout,
     )
-    return ssh, ssh.open_sftp()
+    try:
+        yield sftp
+    finally:
+        sftp.close()
+        ssh.close()
 
 
 def _default_folder_name(suffix: str | None = None) -> str:
@@ -235,21 +279,45 @@ def _default_folder_name(suffix: str | None = None) -> str:
     return name
 
 
+def _remove_remote_folder(sftp, remote_folder: str) -> None:
+    # Best-effort cleanup after a failed upload, so a retry against the same
+    # remote_folder doesn't hit "already exists" on the next mkdir. Failures
+    # here are swallowed - they must never mask the original error.
+    try:
+        for filename in sftp.listdir(remote_folder):
+            try:
+                sftp.remove(posixpath.join(remote_folder, filename))
+            except OSError:
+                pass
+        sftp.rmdir(remote_folder)
+    except OSError:
+        pass
+
+
 def _upload_submission(sftp, remote_folder: str, xml_bytes: bytes) -> None:
-    sftp.mkdir(remote_folder)
+    try:
+        sftp.mkdir(remote_folder)
+    except OSError as e:
+        raise SubmissionError(f"Could not create remote folder {remote_folder!r}: {e}") from e
 
-    xml_path = posixpath.join(remote_folder, "submission.xml")
-    with sftp.open(xml_path, "wb") as f:
-        f.write(xml_bytes)
-    if sftp.stat(xml_path).st_size != len(xml_bytes):
-        raise SubmissionError(f"submission.xml upload size mismatch at {xml_path!r}")
+    try:
+        xml_path = posixpath.join(remote_folder, "submission.xml")
+        with sftp.open(xml_path, "wb") as f:
+            f.write(xml_bytes)
+        if sftp.stat(xml_path).st_size != len(xml_bytes):
+            raise SubmissionError(f"submission.xml upload size mismatch at {xml_path!r}")
 
-    # submit.ready is uploaded last and only after the size check above
-    # passes, so NCBI's scanner can never observe a submit.ready next to an
-    # incomplete submission.xml.
-    ready_path = posixpath.join(remote_folder, "submit.ready")
-    with sftp.open(ready_path, "wb") as f:
-        f.write(b"")
+        # submit.ready is uploaded last and only after the size check above
+        # passes, so NCBI's scanner can never observe a submit.ready next to
+        # an incomplete submission.xml.
+        ready_path = posixpath.join(remote_folder, "submit.ready")
+        with sftp.open(ready_path, "wb") as f:
+            f.write(b"")
+    except BaseException:
+        # Roll back the partially-created remote folder so a retry against
+        # the same remote_folder isn't blocked by a stale "already exists".
+        _remove_remote_folder(sftp, remote_folder)
+        raise
 
 
 def submit_biosamples(
@@ -264,6 +332,7 @@ def submit_biosamples(
     sftp_client=None,
     auto_add_host_key: bool = False,
     known_hosts_path: str | None = None,
+    connect_timeout: float = 10.0,
     folder_name: str | None = None,
     hold_release_date: str | None = None,
     comment: str | None = None,
@@ -282,17 +351,11 @@ def submit_biosamples(
     folder_name = folder_name or _default_folder_name()
     remote_folder = posixpath.join(remote_base_path, folder_name)
 
-    if sftp_client is not None:
-        _upload_submission(sftp_client, remote_folder, xml_bytes)
-    else:
-        ssh, sftp = _connect_sftp(
-            host, username, password, port=port, auto_add_host_key=auto_add_host_key, known_hosts_path=known_hosts_path
-        )
-        try:
-            _upload_submission(sftp, remote_folder, xml_bytes)
-        finally:
-            sftp.close()
-            ssh.close()
+    with _sftp_session(
+        host, username, password, port=port, sftp_client=sftp_client,
+        auto_add_host_key=auto_add_host_key, known_hosts_path=known_hosts_path, connect_timeout=connect_timeout,
+    ) as sftp:
+        _upload_submission(sftp, remote_folder, xml_bytes)
 
     return SubmissionHandle(host=host, remote_folder=remote_folder, submission_xml=xml_bytes)
 
@@ -331,10 +394,19 @@ def _parse_action_result(action_el: ElementTree.Element) -> ActionResult:
 
 
 def _derive_submission_status(actions: list[ActionResult]) -> str:
+    if not actions:
+        # A real submission always has at least one BioSample action; a
+        # report with none is malformed, not a legitimate protocol state -
+        # fail fast here rather than falling through to "Submitted" below,
+        # which poll_submission_report would then wait on until timeout.
+        raise SubmissionError("Report contains no <Action> elements")
     statuses = {a.status for a in actions}
     for status in _STATUS_PRECEDENCE:
         if status in statuses:
             return status
+    # No per-action status matched any of the 5 known values (e.g. a future
+    # NCBI status this module doesn't model yet) - per the protocol's own
+    # precedence rules, this is the documented "Submitted" catch-all.
     return "Submitted"
 
 
@@ -368,26 +440,27 @@ def poll_submission_report(
     sftp_client=None,
     auto_add_host_key: bool = False,
     known_hosts_path: str | None = None,
+    connect_timeout: float = 10.0,
     poll_interval: float = 30.0,
     timeout: float | None = 3600.0,
 ) -> SubmissionResult:
     """Poll `remote_folder` for a report.<N>.xml and return once terminal.
 
-    Raises SubmissionError on Processed-error/Deleted status, or on timeout
-    while still Queued/Processing. timeout=None polls indefinitely.
+    Raises SubmissionError on Processed-error/Deleted status, a malformed
+    report, an unreachable/nonexistent remote_folder, or on timeout while
+    still Queued/Processing. timeout=None polls indefinitely.
     """
-    owns_connection = sftp_client is None
-    if owns_connection:
-        ssh, sftp = _connect_sftp(
-            host, username, password, port=port, auto_add_host_key=auto_add_host_key, known_hosts_path=known_hosts_path
-        )
-    else:
-        sftp = sftp_client
-
-    try:
+    with _sftp_session(
+        host, username, password, port=port, sftp_client=sftp_client,
+        auto_add_host_key=auto_add_host_key, known_hosts_path=known_hosts_path, connect_timeout=connect_timeout,
+    ) as sftp:
         start = time.monotonic()
         while True:
-            filenames = sftp.listdir(remote_folder)
+            try:
+                filenames = sftp.listdir(remote_folder)
+            except OSError as e:
+                raise SubmissionError(f"Could not list {remote_folder!r}: {e}") from e
+
             report_name = _latest_report_name(filenames)
             if report_name is not None:
                 report_path = posixpath.join(remote_folder, report_name)
@@ -407,10 +480,6 @@ def poll_submission_report(
                     f"Timed out after {timeout}s waiting for a terminal report status at {remote_folder!r}"
                 )
             time.sleep(poll_interval)
-    finally:
-        if owns_connection:
-            sftp.close()
-            ssh.close()
 
 
 def submit_and_wait(
@@ -425,6 +494,7 @@ def submit_and_wait(
     sftp_client=None,
     auto_add_host_key: bool = False,
     known_hosts_path: str | None = None,
+    connect_timeout: float = 10.0,
     folder_name: str | None = None,
     hold_release_date: str | None = None,
     comment: str | None = None,
@@ -432,15 +502,10 @@ def submit_and_wait(
     timeout: float | None = 3600.0,
 ) -> SubmissionResult:
     """Convenience: submit_biosamples() + poll_submission_report() over one connection."""
-    owns_connection = sftp_client is None
-    if owns_connection:
-        ssh, sftp = _connect_sftp(
-            host, username, password, port=port, auto_add_host_key=auto_add_host_key, known_hosts_path=known_hosts_path
-        )
-    else:
-        sftp = sftp_client
-
-    try:
+    with _sftp_session(
+        host, username, password, port=port, sftp_client=sftp_client,
+        auto_add_host_key=auto_add_host_key, known_hosts_path=known_hosts_path, connect_timeout=connect_timeout,
+    ) as sftp:
         handle = submit_biosamples(
             biosamples,
             organization,
@@ -458,7 +523,3 @@ def submit_and_wait(
             poll_interval=poll_interval,
             timeout=timeout,
         )
-    finally:
-        if owns_connection:
-            sftp.close()
-            ssh.close()

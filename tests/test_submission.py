@@ -154,6 +154,66 @@ def test_submit_biosamples_raises_on_size_mismatch():
     assert not any(p.endswith("submit.ready") for p in open_calls)
 
 
+def test_submit_biosamples_rolls_back_remote_folder_on_failure():
+    org = submission.Organization(name="Institute of Biology")
+    bs = submission.BioSampleSubmission(
+        spuid="s1", spuid_namespace="NS", organism_name="Escherichia coli", package="Pathogen.cl.1.0", attributes={}
+    )
+
+    sftp_client = MagicMock()
+    sftp_client.open.return_value.__enter__.return_value = MagicMock()
+    sftp_client.stat.return_value.st_size = 1  # forces the size-mismatch failure
+    sftp_client.listdir.return_value = ["submission.xml"]
+
+    with pytest.raises(submission.SubmissionError, match="size mismatch"):
+        submission.submit_biosamples(
+            [bs], org, host="sftp.example.com", remote_base_path="uploads/testuser",
+            sftp_client=sftp_client, folder_name="20260101T000000Z-submission",
+        )
+
+    remote_folder = "uploads/testuser/20260101T000000Z-submission"
+    sftp_client.remove.assert_called_once_with(f"{remote_folder}/submission.xml")
+    sftp_client.rmdir.assert_called_once_with(remote_folder)
+
+
+def test_submit_biosamples_wraps_mkdir_error():
+    org = submission.Organization(name="Institute of Biology")
+    bs = submission.BioSampleSubmission(
+        spuid="s1", spuid_namespace="NS", organism_name="Escherichia coli", package="Pathogen.cl.1.0", attributes={}
+    )
+
+    sftp_client = MagicMock()
+    sftp_client.mkdir.side_effect = OSError("already exists")
+
+    with pytest.raises(submission.SubmissionError, match="Could not create remote folder"):
+        submission.submit_biosamples(
+            [bs], org, host="sftp.example.com", remote_base_path="uploads/testuser", sftp_client=sftp_client
+        )
+
+
+def test_submit_biosamples_forwards_connect_timeout(monkeypatch):
+    org = submission.Organization(name="Institute of Biology")
+    bs = submission.BioSampleSubmission(
+        spuid="s1", spuid_namespace="NS", organism_name="Escherichia coli", package="Pathogen.cl.1.0", attributes={}
+    )
+    xml_bytes = submission.submission_xml_bytes(submission.build_biosample_submission_xml(org, [bs]))
+
+    fake_ssh = MagicMock()
+    fake_sftp = MagicMock()
+    fake_sftp.open.return_value.__enter__.return_value = MagicMock()
+    fake_sftp.stat.return_value.st_size = len(xml_bytes)
+    mock_connect = MagicMock(return_value=(fake_ssh, fake_sftp))
+    monkeypatch.setattr(submission, "_connect_sftp", mock_connect)
+
+    submission.submit_biosamples(
+        [bs], org, host="sftp.example.com", remote_base_path="uploads/testuser", connect_timeout=42.0
+    )
+
+    assert mock_connect.call_args.kwargs["timeout"] == 42.0
+    fake_sftp.close.assert_called_once()
+    fake_ssh.close.assert_called_once()
+
+
 # --- Report parsing ---
 
 
@@ -220,6 +280,12 @@ def test_parse_report_malformed_xml_raises_clear_error():
         submission._parse_report(b"<SubmissionStatus", "report.1.xml")
 
 
+def test_parse_report_no_actions_raises_instead_of_returning_submitted():
+    xml = _report_xml("")
+    with pytest.raises(submission.SubmissionError, match="no <Action> elements"):
+        submission._parse_report(xml, "report.1.xml")
+
+
 # --- Polling loop ---
 
 
@@ -282,6 +348,36 @@ def test_poll_submission_report_times_out(monkeypatch):
         )
 
 
+def test_poll_submission_report_wraps_listdir_error(monkeypatch):
+    monkeypatch.setattr(submission.time, "sleep", lambda _: None)
+
+    sftp_client = MagicMock()
+    sftp_client.listdir.side_effect = OSError("no such file")
+
+    with pytest.raises(submission.SubmissionError, match="Could not list"):
+        submission.poll_submission_report(
+            host="sftp.example.com", remote_folder="uploads/testuser/missing", sftp_client=sftp_client, poll_interval=0
+        )
+
+
+def test_poll_submission_report_forwards_connect_timeout(monkeypatch):
+    monkeypatch.setattr(submission.time, "sleep", lambda _: None)
+
+    fake_ssh = MagicMock()
+    fake_sftp = MagicMock()
+    fake_sftp.listdir.return_value = ["report.1.xml"]
+    ok_xml = _report_xml('<Action status="Processed-ok"/>')
+    fake_sftp.open.return_value.__enter__.return_value.read.return_value = ok_xml
+    mock_connect = MagicMock(return_value=(fake_ssh, fake_sftp))
+    monkeypatch.setattr(submission, "_connect_sftp", mock_connect)
+
+    submission.poll_submission_report(
+        host="sftp.example.com", remote_folder="uploads/testuser/x", connect_timeout=42.0, poll_interval=0
+    )
+
+    assert mock_connect.call_args.kwargs["timeout"] == 42.0
+
+
 # --- Missing paramiko / real exception propagation ---
 
 
@@ -295,3 +391,114 @@ def test_connect_sftp_propagates_real_paramiko_errors():
     pytest.importorskip("paramiko")
     with pytest.raises(Exception):
         submission._connect_sftp("127.0.0.1", "user", "pass", port=1, timeout=1)
+
+
+def test_connect_sftp_closes_ssh_if_open_sftp_fails(monkeypatch):
+    fake_ssh = MagicMock()
+    fake_ssh.open_sftp.side_effect = OSError("sftp subsystem failed")
+    fake_paramiko = MagicMock()
+    fake_paramiko.SSHClient.return_value = fake_ssh
+    monkeypatch.setattr(submission, "paramiko", fake_paramiko)
+
+    with pytest.raises(OSError, match="sftp subsystem failed"):
+        submission._connect_sftp("sftp.example.com", "user", "pass")
+
+    fake_ssh.close.assert_called_once()
+
+
+# --- _sftp_session connection lifecycle ---
+
+
+def test_sftp_session_uses_injected_client_without_closing():
+    sftp_client = MagicMock()
+    with submission._sftp_session(
+        "h", "u", "p", port=22, sftp_client=sftp_client, auto_add_host_key=False,
+        known_hosts_path=None, connect_timeout=10.0,
+    ) as sftp:
+        assert sftp is sftp_client
+    sftp_client.close.assert_not_called()
+
+
+def test_sftp_session_closes_owned_connection_on_exception(monkeypatch):
+    fake_ssh = MagicMock()
+    fake_sftp = MagicMock()
+    monkeypatch.setattr(submission, "_connect_sftp", MagicMock(return_value=(fake_ssh, fake_sftp)))
+
+    with pytest.raises(ValueError, match="boom"):
+        with submission._sftp_session(
+            "h", "u", "p", port=22, sftp_client=None, auto_add_host_key=False,
+            known_hosts_path=None, connect_timeout=10.0,
+        ):
+            raise ValueError("boom")
+
+    fake_sftp.close.assert_called_once()
+    fake_ssh.close.assert_called_once()
+
+
+# --- submit_and_wait ---
+
+
+def test_submit_and_wait_success_reuses_one_connection(monkeypatch):
+    monkeypatch.setattr(submission.time, "sleep", lambda _: None)
+
+    org = submission.Organization(name="Institute of Biology")
+    bs = submission.BioSampleSubmission(
+        spuid="s1", spuid_namespace="NS", organism_name="Escherichia coli", package="Pathogen.cl.1.0", attributes={}
+    )
+    xml_bytes = submission.submission_xml_bytes(submission.build_biosample_submission_xml(org, [bs]))
+    ok_xml = _report_xml('<Action status="Processed-ok"><Response><Object accession="SAMN1"/></Response></Action>')
+
+    sftp_client = MagicMock()
+    sftp_client.stat.return_value.st_size = len(xml_bytes)
+    sftp_client.listdir.return_value = ["report.1.xml"]
+
+    def fake_open(path, mode):
+        cm = MagicMock()
+        if mode == "rb":
+            cm.__enter__.return_value.read.return_value = ok_xml
+        return cm
+
+    sftp_client.open.side_effect = fake_open
+
+    result = submission.submit_and_wait(
+        [bs], org, host="sftp.example.com", remote_base_path="uploads/testuser",
+        sftp_client=sftp_client, poll_interval=0,
+    )
+
+    assert result.status == "Processed-ok"
+    assert result.actions[0].accession == "SAMN1"
+    # caller-supplied client - submit_and_wait must not close it
+    sftp_client.close.assert_not_called()
+
+
+def test_submit_and_wait_owns_and_closes_its_connection(monkeypatch):
+    monkeypatch.setattr(submission.time, "sleep", lambda _: None)
+
+    org = submission.Organization(name="Institute of Biology")
+    bs = submission.BioSampleSubmission(
+        spuid="s1", spuid_namespace="NS", organism_name="Escherichia coli", package="Pathogen.cl.1.0", attributes={}
+    )
+    xml_bytes = submission.submission_xml_bytes(submission.build_biosample_submission_xml(org, [bs]))
+    ok_xml = _report_xml('<Action status="Processed-ok"/>')
+
+    fake_ssh = MagicMock()
+    fake_sftp = MagicMock()
+    fake_sftp.stat.return_value.st_size = len(xml_bytes)
+    fake_sftp.listdir.return_value = ["report.1.xml"]
+
+    def fake_open(path, mode):
+        cm = MagicMock()
+        if mode == "rb":
+            cm.__enter__.return_value.read.return_value = ok_xml
+        return cm
+
+    fake_sftp.open.side_effect = fake_open
+    monkeypatch.setattr(submission, "_connect_sftp", MagicMock(return_value=(fake_ssh, fake_sftp)))
+
+    result = submission.submit_and_wait(
+        [bs], org, host="sftp.example.com", remote_base_path="uploads/testuser", poll_interval=0
+    )
+
+    assert result.status == "Processed-ok"
+    fake_sftp.close.assert_called_once()
+    fake_ssh.close.assert_called_once()
