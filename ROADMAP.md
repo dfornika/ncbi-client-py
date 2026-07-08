@@ -8,6 +8,7 @@
 - **BLAST**: submit/poll/fetch wrapped behind a blocking `client.blast()`, plus an async prototype (`AsyncNCBIClient`) scoped to BLAST only.
 - **SRA**: `client.download_sra(...)` (public S3 Open Data bucket first, SDL resolver fallback), `client.copy_sra_to_s3(...)` (direct S3-to-S3 server-side copy via boto3, optional `[s3]` extra), `client.download_fastq(...)` (ENA Portal API convenience path). No submission support.
 - **BioSample glue**: `client.biosample_assembly_accessions(...)` / `client.biosample_sra_run_accessions(...)` resolve a BioSample accession to its linked assembly and SRA run accessions; `client.download_biosample_assemblies(...)` / `client.download_biosample_fastqs(...)` chain those into the existing download primitives. ✅ Done.
+- **BioSample creation** (`client.submit_biosamples(...)` / `poll_biosample_submission(...)` / `submit_biosamples_and_wait(...)`, `src/ncbi_client/submission.py`): builds NCBI's UI-less Submission Protocol XML, uploads via SFTP (paramiko, optional `[sftp]` extra), polls for the resulting `report.<N>.xml`. **Validated only against a local Docker `atmoz/sftp` server + a hand-rolled fake-portal test script — never against real NCBI infrastructure (test or production).** SRA read submission is not implemented (BioSample-only for this cut).
 
 ## Proposed phases
 
@@ -40,13 +41,12 @@
 
 ### Phase 3 — higher complexity, needs care
 
-**Create BioSample + upload reads to SRA**
-- There's no modern public REST API for this. NCBI's process is: email `sra@ncbi.nlm.nih.gov` to request a "center account" for programmatic XML submission, generate Submission/BioSample/SRA XML descriptors, transfer the XML + data files via FTP/Aspera/S3, then poll a report file NCBI generates for processing status.
-- This creates real, public, hard-to-reverse records (a live BioSample/SRA accession) once submitted for real. Any implementation should:
-  - Start as a research spike (confirm current XML schema, confirm NCBI's test/sandbox submission area) before writing library code.
-  - Only be tested against NCBI's sandbox area, never production, until the user explicitly wants a real submission.
-  - Require explicit confirmation for any call that would submit to the production endpoint — this shouldn't be a "default yes" operation given the consequences of a mistake.
-- Treat this as the last item to tackle, once the read-side (Phases 1–2) is solid.
+**Create BioSample** ✅ Done (BioSample-only; SRA read upload still open — see below)
+- No modern public REST API for this — implemented against NCBI's 2016-vintage "UI-less Data Submission Protocol": build a `submission.xml` (`<Submission><Description>...<Action><AddData target_db="BioSample">...`), upload it + a `submit.ready` sentinel via SFTP (paramiko, `ncbi-client[sftp]` extra, defaults to `RejectPolicy` for host keys — stricter than the reference pipeline this was researched from), then poll for NCBI's `report.<N>.xml` (per-action status: `Queued`/`Processing`/`Processed-ok`/`Processed-error`/`Deleted`, submission status derived via the documented precedence rule).
+- `host`/`remote_base_path` have no defaults anywhere in `submission.py` — there is no way to accidentally reach a real server, test or production, without deliberately supplying its address.
+- **Validation is local-only for this cut, by explicit design**: a Docker `atmoz/sftp` container plus a hand-rolled `tests/manual/fake_submission_portal.py` (happy-path-only stand-in for NCBI's report-generation, since no such simulator exists anywhere in the wild — confirmed via research) were used to prove the full submit→poll→accession round-trip works. This proves the library's SFTP/XML/polling mechanics are correct; it does **not** prove NCBI's real Submission Portal will accept this XML (real schema/package/attribute validation, real timing) — that needs an eventual real NCBI test-path (`submit/Test`) submission, which is a deliberate, separate future step requiring explicit sign-off, not something this cut did.
+- **SRA read upload** (`AddFiles target_db="SRA"` actions) is a separate, not-yet-built feature — `submission.py` is factored so its transport/polling plumbing (SFTP connect/upload/poll/report-parsing) is reusable for it without a rewrite, only a new XML-builder function and top-level `submit_sra(...)`-style entry point would be needed.
+- BioProject creation is out of scope — BioSample submissions reference an already-existing BioProject via `PrimaryId`, matching how `bridge.biosample_assembly_accessions`/`biosample_sra_run_accessions` already assume pre-existing accessions elsewhere in this library.
 
 ## Other ideas worth considering
 
@@ -63,5 +63,6 @@
 3. ~~SRA `.sra`/FASTQ download (NCBI-default, ENA-convenience)~~ ✅ Done
 4. ~~BioSample metadata + associated-file glue (assemblies, FASTQs)~~ ✅ Done
 5. BioProject support, if it turns out to matter for the above
-6. BioSample creation + SRA read upload (research spike first, sandbox-only)
-7. Nice-to-haves: streaming/resumable downloads, broader async, CLI, caching
+6. ~~BioSample creation~~ ✅ Done, local-only (see above) — SRA read upload via the same submission plumbing is still open
+7. Real NCBI test-path (`submit/Test`) validation of BioSample creation, once explicitly requested
+8. Nice-to-haves: streaming/resumable downloads, broader async, CLI, caching
