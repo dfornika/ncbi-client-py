@@ -15,10 +15,10 @@ try:
 except ImportError:
     paramiko = None
 
-# NCBI's UI-less Submission Protocol derives an aggregate submission status
-# from per-action statuses by this precedence (most to least severe); see
-# docs/UI-lessSubmissionProtocol.md Appendix A. We trust this derivation over
-# the report's own top-level SubmissionStatus/@status, which isn't guaranteed
+# NCBI's UI-less Data Submission Protocol (Appendix A: Submission Statuses)
+# derives an aggregate submission status from per-action statuses by this
+# precedence (most to least severe). We trust this derivation over the
+# report's own top-level SubmissionStatus/@status, which isn't guaranteed
 # present or correct.
 _STATUS_PRECEDENCE = ["Processed-error", "Processing", "Queued", "Deleted", "Processed-ok"]
 
@@ -26,7 +26,12 @@ _REPORT_NAME_RE = re.compile(r"^report\.(\d+)\.xml$")
 
 
 class SubmissionError(NCBIAPIError):
-    pass
+    def __init__(self, message, *, result: SubmissionResult | None = None):
+        super().__init__(message)
+        # Populated when a report was successfully parsed but its terminal
+        # status was Processed-error/Deleted, so callers can inspect
+        # per-action messages/accessions without re-parsing the report.
+        self.result = result
 
 
 @dataclass
@@ -471,9 +476,9 @@ def poll_submission_report(
                 if result.status == "Processed-ok":
                     return result
                 if result.status in ("Processed-error", "Deleted"):
-                    error = SubmissionError(f"Submission at {remote_folder!r} ended with status {result.status!r}")
-                    error.result = result
-                    raise error
+                    raise SubmissionError(
+                        f"Submission at {remote_folder!r} ended with status {result.status!r}", result=result
+                    )
 
             if timeout is not None and (time.monotonic() - start) >= timeout:
                 raise SubmissionError(

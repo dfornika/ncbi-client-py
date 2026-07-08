@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Scratchpad for playing with BioSample submission against a local test stack.
 
 NOT part of the shipped library, NOT a pytest test - just a runnable script.
