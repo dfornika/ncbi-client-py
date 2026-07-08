@@ -5,7 +5,7 @@ from pathlib import Path
 
 import httpx
 
-from ncbi_client import blast, bridge, datasets, eutils, sra
+from ncbi_client import blast, bridge, datasets, eutils, sra, submission
 from ncbi_client.throttle import MinIntervalLimiter, RateLimiter
 
 
@@ -166,6 +166,17 @@ class NCBIClient:
 
     def download_fastq(self, accession: str, destination_dir):
         return sra.download_fastq(self, accession, destination_dir)
+
+    # --- Submission ---
+
+    def submit_biosamples(self, biosamples, organization, *, host, remote_base_path, **kwargs):
+        return submission.submit_biosamples(biosamples, organization, host=host, remote_base_path=remote_base_path, **kwargs)
+
+    def poll_biosample_submission(self, *, host, remote_folder, **kwargs):
+        return submission.poll_submission_report(host=host, remote_folder=remote_folder, **kwargs)
+
+    def submit_biosamples_and_wait(self, biosamples, organization, *, host, remote_base_path, **kwargs):
+        return submission.submit_and_wait(biosamples, organization, host=host, remote_base_path=remote_base_path, **kwargs)
 
     # --- BLAST ---
 

@@ -22,7 +22,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install -e ".[dev,s3]"
+        run: pip install -e ".[dev,s3,sftp]"
 
       - name: Run tests
         run: pytest
